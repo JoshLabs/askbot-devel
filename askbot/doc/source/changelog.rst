@@ -1,5 +1,9 @@
 Changes in Askbot
 =================
+0.7.48.1 (July 10, 2013)
+---------------------
+* Modified Release
+* removed the startup procedure check for template loaders
 
 0.7.48 (Jan 28, 2013)
 ---------------------
