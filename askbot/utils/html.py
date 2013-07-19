@@ -63,6 +63,11 @@ def absolutize_urls(html):
 
 
 def edit_links_for_nofollow(html):
+    """
+    adds rel='nofollow' for all external links (links without APP_URL as their prefix)
+    @param html: html to be parsed and edited
+    @return: returns the edited html
+    """
     soup = BeautifulSoup(html)
 
     links = soup.find_all('a')
