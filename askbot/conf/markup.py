@@ -139,3 +139,20 @@ settings.register(
         default = ''
     )
 )
+
+
+############################### Modified app Settings ###########################
+
+settings.register(
+    BooleanValue(
+        MARKUP,
+        'ENABLE_NOFOLLOWED_LINKS_AND_IMAGE_LINKING',
+        description=_("Enable nofollowed linking for user's with rep less then MIN_REP_TO_INSERT_LINK "
+                      "and image linking"),
+        help_text=_(
+            "This enables links for even those user's whose rep is less than MIN_REP_TO_INSERT_LINK"
+            " Also the image are shown for such a user if this is set."
+        ),
+        default=False
+    )
+)

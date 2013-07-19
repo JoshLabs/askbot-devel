@@ -61,7 +61,7 @@ from askbot import auth
 from askbot.utils.decorators import auto_now_timestamp
 from askbot.utils.markup import URL_RE
 from askbot.utils.slug import slugify
-from askbot.utils.html import replace_links_with_text
+from askbot.utils.html import replace_links_with_text, edit_links_for_nofollow
 from askbot.utils.html import sanitize_html
 from askbot.utils.diff import textDiff as htmldiff
 from askbot.utils.url_utils import strip_path
@@ -2558,15 +2558,19 @@ def user_fix_html_links(self, text):
     is_simple_user = not self.is_administrator_or_moderator()
     has_low_rep = self.reputation < askbot_settings.MIN_REP_TO_INSERT_LINK
     if is_simple_user and has_low_rep:
-        result = replace_links_with_text(text)
-        if result != text:
-            message = ungettext(
-                'At least %d karma point is required to post links',
-                'At least %d karma points is required to post links',
-                askbot_settings.MIN_REP_TO_INSERT_LINK
-            ) % askbot_settings.MIN_REP_TO_INSERT_LINK
-            self.message_set.create(message=message)
-        return result
+
+        if askbot_settings.ENABLE_NOFOLLOWED_LINKS_AND_IMAGE_LINKING:
+            return edit_links_for_nofollow(text)
+        else:
+            result = replace_links_with_text(text)
+            if result != text:
+                message = ungettext(
+                    'At least %d karma point is required to post links',
+                    'At least %d karma points is required to post links',
+                    askbot_settings.MIN_REP_TO_INSERT_LINK
+                ) % askbot_settings.MIN_REP_TO_INSERT_LINK
+                self.message_set.create(message=message)
+            return result
     return text
 
 def user_unfollow_question(self, question = None):

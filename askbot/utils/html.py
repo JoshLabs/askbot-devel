@@ -61,6 +61,21 @@ def absolutize_urls(html):
     return url_re4.sub(replacement, html).replace('%s//' % askbot_settings.APP_URL,
                                                   '%s/' % askbot_settings.APP_URL)
 
+
+def edit_links_for_nofollow(html):
+    soup = BeautifulSoup(html)
+
+    links = soup.find_all('a')
+    if links:
+        app_domain = urlparse(askbot_settings.APP_URL).netloc
+        for link in links:
+            url = link.get('href', '')
+            if urlparse(url).netloc != app_domain:
+                link['rel'] = 'nofollow'
+
+    return unicode(soup.find('body').renderContents(), 'utf-8')
+
+
 def replace_links_with_text(html):
     """any absolute links will be replaced with the
     url in plain text, same with any img tags
