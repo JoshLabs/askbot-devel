@@ -1,5 +1,11 @@
 Changes in Askbot
 =================
+0.7.48.2 (July 22, 2013)
+---------------------
+* Modified Release
+* Added support for no-followed external links
+
+=================
 0.7.48.1 (July 10, 2013)
 ---------------------
 * Modified Release
