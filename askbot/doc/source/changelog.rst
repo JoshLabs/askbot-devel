@@ -1,5 +1,10 @@
 Changes in Askbot
 =================
+0.7.49.2 (Jan 31, 2014)
+---------------------
+* Updated to 0.7.49
+* Merged all changes of 0.7.48.2
+
 0.7.48.2 (July 22, 2013)
 ---------------------
 * Modified Release
