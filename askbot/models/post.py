@@ -1,10 +1,8 @@
 from collections import defaultdict
 import datetime
 import operator
-import cgi
 import logging
 
-from django.utils.html import strip_tags
 from django.contrib.sitemaps import ping_google
 from django.utils import html
 from django.conf import settings as django_settings
@@ -35,7 +33,8 @@ from askbot.models.tag import tags_match_some_wildcard
 from askbot.conf import settings as askbot_settings
 from askbot import exceptions
 from askbot.utils import markup
-from askbot.utils.html import sanitize_html
+from askbot.utils.html import sanitize_html, strip_tags
+from askbot.utils.html import site_url
 from askbot.models.base import BaseQuerySetManager, DraftContent
 
 #todo: maybe merge askbot.utils.markup and forum.utils.html
@@ -206,14 +205,20 @@ class PostManager(BaseQuerySetManager):
 
         assert(post_type in const.POST_TYPES)
 
+        if thread:
+            language_code = thread.language_code
+        else:
+            language_code = get_language()
+
         post = Post(
-            post_type = post_type,
-            thread = thread,
-            parent = parent,
-            author = author,
-            added_at = added_at,
-            wiki = wiki,
-            text = text,
+            post_type=post_type,
+            thread=thread,
+            parent=parent,
+            author=author,
+            added_at=added_at,
+            wiki=wiki,
+            text=text,
+            language_code=language_code
             #.html field is denormalized by the save() call
         )
 
@@ -371,6 +376,7 @@ class Post(models.Model):
 
     html = models.TextField(null=True)#html rendition of the latest revision
     text = models.TextField(null=True)#denormalized copy of latest revision
+    language_code = models.CharField(max_length=16, default=django_settings.LANGUAGE_CODE)
 
     # Denormalised data
     summary = models.TextField(null=True)
@@ -399,6 +405,20 @@ class Post(models.Model):
         if number:
             self.points = int(number)
 
+    def as_tweet(self):
+        """a naive tweet representation of post
+        todo: add mentions to relevant people
+        """
+        url = site_url(self.get_absolute_url(no_slug=True))
+        if self.post_type == 'question':
+            tweet = _('Question: ')
+        elif self.post_type == 'answer':
+            tweet = _('Answer: ')
+
+        chars_left = 140 - (len(url) + len(tweet) + 1)
+        title_str = self.thread.title[:chars_left]
+        return tweet + title_str + ' ' + url
+
     def parse_post_text(self):
         """typically post has a field to store raw source text
         in comment it is called .comment, in Question and Answer it is
@@ -415,27 +435,8 @@ class Post(models.Model):
         removed_mentions - list of mention <Activity> objects - for removed ones
         """
 
-        if self.post_type in ('question', 'answer', 'tag_wiki', 'reject_reason'):
-            _urlize = False
-            _use_markdown = (askbot_settings.EDITOR_TYPE == 'markdown')
-            _escape_html = False #markdow does the escaping
-        elif self.is_comment():
-            _urlize = True
-            _use_markdown = (askbot_settings.EDITOR_TYPE == 'markdown')
-            _escape_html = True
-        else:
-            raise NotImplementedError
-
-        text = self.text
-
-        if _escape_html:
-            text = cgi.escape(text)
-
-        if _urlize:
-            text = html.urlize(text)
-
-        if _use_markdown:
-            text = sanitize_html(markup.get_parser().convert(text))
+        text_converter = self.get_text_converter()
+        text = text_converter(self.text)
 
         #todo, add markdown parser call conditional on
         #self.use_markdown flag
@@ -574,18 +575,59 @@ class Post(models.Model):
     def is_reject_reason(self):
         return self.post_type == 'reject_reason'
 
+    def get_last_edited_date(self):
+        """returns date of last edit or date of creation
+        if there were no edits"""
+        return self.last_edited_at or self.added_at
+
     def get_moderators(self):
         """returns query set of users who are site administrators
         and moderators"""
         user_filter = models.Q(is_superuser=True) | models.Q(status='m')
         if askbot_settings.GROUPS_ENABLED:
             user_filter = user_filter & models.Q(groups__in=self.groups.all())
-        return User.objects.filter(user_filter)
+        return User.objects.filter(user_filter).distinct()
 
-    def get_last_edited_date(self):
-        """returns date of last edit or date of creation
-        if there were no edits"""
-        return self.last_edited_at or self.added_at
+    def get_previous_answer(self, user=None):
+        """returns a previous answer to a given answer;
+        only works on the "answer" post types"""
+        assert(self.post_type == 'answer')
+        all_answers = self.thread.get_answers(user=user)
+
+        matching_answers = all_answers.filter(
+                        added_at__lt=self.added_at,
+                    ).order_by('-added_at')
+
+        if len(matching_answers) == 0:
+            return None
+
+        answer = matching_answers[0]
+
+        if answer.id == self.id:
+            return None
+        if answer.added_at > self.added_at:
+            return None
+
+        return answer
+
+    def get_text_converter(self):
+        have_simple_comment = (
+            self.is_comment() and 
+            askbot_settings.COMMENTS_EDITOR_TYPE == 'plain-text'
+        )
+        if have_simple_comment:
+            parser_type = 'plain-text'
+        else:
+            parser_type = askbot_settings.EDITOR_TYPE
+
+        if parser_type == 'plain-text':
+            return markup.plain_text_input_converter
+        elif parser_type == 'markdown':
+            return markup.markdown_input_converter
+        elif parser_type == 'tinymce':
+            return markup.tinymce_input_converter
+        else:
+            raise NotImplementedError
 
     def has_group(self, group):
         """true if post belongs to the group"""
@@ -596,6 +638,7 @@ class Post(models.Model):
         #this is likely to be temporary - we add
         #vip groups to the list behind the scenes.
         groups = list(groups)
+        #add moderator groups to the post implicitly
         vips = Group.objects.filter(is_vip=True)
         groups.extend(vips)
         #todo: use bulk-creation
@@ -622,6 +665,7 @@ class Post(models.Model):
                                 updated_by=None,
                                 notify_sets=None,
                                 activity_type=None,
+                                suppress_email=False,
                                 timestamp=None,
                                 diff=None
                             ):
@@ -665,7 +709,7 @@ class Post(models.Model):
             user.update_response_counts()
 
         #shortcircuit if the email alerts are disabled
-        if askbot_settings.ENABLE_EMAIL_ALERTS == False:
+        if suppress_email == True or askbot_settings.ENABLE_EMAIL_ALERTS == False:
             return
         #todo: fix this temporary spam protection plug
         if askbot_settings.MIN_REP_TO_TRIGGER_EMAIL:
@@ -757,11 +801,17 @@ class Post(models.Model):
         if self.is_answer():
             if not question_post:
                 question_post = self.thread._question_post()
-            url = u'%(base)s%(slug)s/?answer=%(id)d#post-id-%(id)d' % {
-                'base': urlresolvers.reverse('question', args=[question_post.id]),
-                'slug': django_urlquote(slugify(self.thread.title)),
-                'id': self.id
-            }
+            if no_slug:
+                url = u'%(base)s?answer=%(id)d#post-id-%(id)d' % {
+                    'base': urlresolvers.reverse('question', args=[question_post.id]),
+                    'id': self.id
+                }
+            else:
+                url = u'%(base)s%(slug)s/?answer=%(id)d#post-id-%(id)d' % {
+                    'base': urlresolvers.reverse('question', args=[question_post.id]),
+                    'slug': django_urlquote(slugify(self.thread.title)),
+                    'id': self.id
+                }
         elif self.is_question():
             url = urlresolvers.reverse('question', args=[self.id])
             if thread:
@@ -817,11 +867,8 @@ class Post(models.Model):
     def __unicode__(self):
         if self.is_question():
             return self.thread.title
-        elif self.is_answer() or self.is_reject_reason():
+        else:
             return self.html
-        elif self.is_comment():
-            return self.text
-        raise NotImplementedError
 
     def save(self, *args, **kwargs):
         if self.is_answer() and self.is_anonymous:
@@ -1652,7 +1699,8 @@ class Post(models.Model):
                     wiki=False,
                     edit_anonymously=False,
                     is_private=False,
-                    by_email=False
+                    by_email=False,
+                    suppress_email=False
                 ):
         if text is None:
             text = self.get_latest_revision().text
@@ -1687,6 +1735,7 @@ class Post(models.Model):
             post=self,
             updated_by=edited_by,
             newly_mentioned_users=parse_results['newly_mentioned_users'],
+            suppress_email=suppress_email,
             timestamp=edited_at,
             created=False,
             diff=parse_results['diff'],
@@ -1696,13 +1745,14 @@ class Post(models.Model):
 
     def _answer__apply_edit(
                         self,
-                        edited_at = None,
-                        edited_by = None,
-                        text = None,
-                        comment = None,
-                        wiki = False,
-                        is_private = False,
-                        by_email = False
+                        edited_at=None,
+                        edited_by=None,
+                        text=None,
+                        comment=None,
+                        wiki=False,
+                        is_private=False,
+                        by_email=False,
+                        suppress_email=False,
                     ):
 
         ##it is important to do this before __apply_edit b/c of signals!!!
@@ -1719,7 +1769,8 @@ class Post(models.Model):
             comment=comment,
             wiki=wiki,
             by_email=by_email,
-            is_private=is_private
+            is_private=is_private,
+            suppress_email=suppress_email
         )
 
         if edited_at is None:
@@ -1728,8 +1779,8 @@ class Post(models.Model):
 
     def _question__apply_edit(self, edited_at=None, edited_by=None, title=None,\
                               text=None, comment=None, tags=None, wiki=False,\
-                              edit_anonymously = False, is_private = False,
-                              by_email = False
+                              edit_anonymously=False, is_private=False,\
+                              by_email=False, suppress_email=False
                             ):
 
         #todo: the thread editing should happen outside of this
@@ -1770,7 +1821,8 @@ class Post(models.Model):
             wiki=wiki,
             edit_anonymously=edit_anonymously,
             is_private=is_private,
-            by_email=by_email
+            by_email=by_email,
+            suppress_email=suppress_email
         )
 
         self.thread.set_last_activity(last_activity_at=edited_at, last_activity_by=edited_by)
@@ -1802,7 +1854,7 @@ class Post(models.Model):
         rev_no = self.revisions.all().count() + 1
         if comment in (None, ''):
             if rev_no == 1:
-                comment = const.POST_STATUS['default_version']
+                comment = unicode(const.POST_STATUS['default_version'])
             else:
                 comment = 'No.%s Revision' % rev_no
         return PostRevision.objects.create(
@@ -1830,7 +1882,7 @@ class Post(models.Model):
         rev_no = self.revisions.all().count() + 1
         if comment in (None, ''):
             if rev_no == 1:
-                comment = const.POST_STATUS['default_version']
+                comment = unicode(const.POST_STATUS['default_version'])
             else:
                 comment = 'No.%s Revision' % rev_no
 
@@ -1944,7 +1996,7 @@ class Post(models.Model):
             else:
                 attr = None
             if attr is not None:
-                return u'%s %s' % (self.thread.title, attr)
+                return u'%s %s' % (self.thread.title, unicode(attr))
             else:
                 return self.thread.title
         raise NotImplementedError
@@ -2015,7 +2067,7 @@ class PostRevision(models.Model):
     author = models.ForeignKey('auth.User', related_name='%(class)ss')
     revised_at = models.DateTimeField()
     summary = models.CharField(max_length=300, blank=True)
-    text = models.TextField()
+    text = models.TextField(blank=True)
 
     approved = models.BooleanField(default=False, db_index=True)
     approved_by = models.ForeignKey(User, null = True, blank = True)

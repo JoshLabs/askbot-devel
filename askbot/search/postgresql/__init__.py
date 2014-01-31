@@ -3,6 +3,26 @@ from django.db import connection
 from django.conf import settings as django_settings
 from django.utils.translation import get_language
 
+#mapping of "django" language names to postgres
+LANGUAGE_NAMES = {
+    'da': 'danish',
+    'nl': 'dutch',
+    'en': 'english',
+    'fi': 'finnish',
+    'fr': 'french',
+    'de': 'german',
+    'hu': 'hungarian',
+    'it': 'italian',
+    'ja': 'japanese',
+    'nb': 'norwegian',
+    'pt': 'portugese',
+    'ro': 'romanian',
+    'ru': 'russian',
+    'es': 'spanish',
+    'sv': 'swedish',
+    'tr': 'turkish'
+}
+
 def setup_full_text_search(script_path):
     """using postgresql database connection,
     installs the plsql language, if necessary
@@ -37,17 +57,28 @@ def run_full_text_search(query_set, query_text, text_search_vector_name):
  
     rank_clause = 'ts_rank(' + table_name + \
                     '.' + text_search_vector_name + \
-                    ', plainto_tsquery(%s))'
+                    ', plainto_tsquery(%s, %s))'
  
     where_clause = table_name + '.' + \
                     text_search_vector_name + \
-                    ' @@ plainto_tsquery(%s)'
+                    ' @@ plainto_tsquery(%s, %s)'
 
-    if getattr(django_settings, 'ASKBOT_MULTILINGUAL', True):
-        where_clause += " AND language_code='" + get_language() + "'"
+    language_code = get_language()
 
-    search_query = '&'.join(query_text.split())#apply "AND" operator
-    extra_params = (search_query,)
+    #a hack with japanese search for the short queries
+    if language_code == 'ja' and len(query_text) in (1, 2):
+        mul = 4/len(query_text) #4 for 1 and 2 for 2
+        query_text = (query_text + ' ')*mul
+
+    #the table name is a hack, because user does not have the language code
+    is_multilingual = getattr(django_settings, 'ASKBOT_MULTILINGUAL', False)
+    if is_multilingual and table_name == 'askbot_thread':
+        where_clause += " AND " + table_name + \
+                        '.' + "language_code='" + language_code + "'"
+
+    search_query = '|'.join(query_text.split())#apply "OR" operator
+    language_name = LANGUAGE_NAMES.get(language_code, 'english')
+    extra_params = (language_name, search_query,)
     extra_kwargs = {
         'select': {'relevance': rank_clause},
         'where': [where_clause,],
@@ -60,6 +91,8 @@ def run_full_text_search(query_set, query_text, text_search_vector_name):
 def run_thread_search(query_set, query):
     """runs search for full thread content"""
     return run_full_text_search(query_set, query, 'text_search_vector');
+
+run_user_search = run_thread_search #an alias
 
 def run_title_search(query_set, query):
     """runs search for title and tags"""

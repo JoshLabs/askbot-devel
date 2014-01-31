@@ -19,7 +19,7 @@ import askbot
 from askbot.conf import settings as askbot_settings
 from askbot import mail
 from askbot.mail import messages
-from askbot.models.tag import Tag
+from askbot.models.tag import Tag, TagSynonym
 from askbot.models.tag import get_tags_by_names
 from askbot.models.tag import filter_accepted_tags, filter_suggested_tags
 from askbot.models.tag import separate_unused_tags
@@ -48,21 +48,30 @@ class ThreadQuerySet(models.query.QuerySet):
         todo: possibly add tags
         todo: implement full text search on relevant fields
         """
-        db_engine_name = askbot.get_database_engine_name()
-        if 'postgresql_psycopg2' in db_engine_name:
-            from askbot.search import postgresql
-            return postgresql.run_title_search(
-                                    self, search_query
-                                ).order_by('-relevance')
-        elif 'mysql' in db_engine_name and mysql.supports_full_text_search():
-            filter_parameters = {'title__search': search_query}
+
+        if getattr(django_settings, 'ENABLE_HAYSTACK_SEARCH', False):
+            from askbot.search.haystack.searchquery import AskbotSearchQuerySet
+            hs_qs = AskbotSearchQuerySet().filter(content=search_query).models(self.model)
+            return hs_qs.get_django_queryset()
         else:
-            filter_parameters = {'title__icontains': search_query}
+            db_engine_name = askbot.get_database_engine_name()
+            filter_parameters = {'deleted': False}
+            if 'postgresql_psycopg2' in db_engine_name:
+                from askbot.search import postgresql
+                return postgresql.run_title_search(
+                                        self, search_query
+                                    ).filter(
+                                        **filter_parameters
+                                    ).order_by('-relevance')
+            elif 'mysql' in db_engine_name and mysql.supports_full_text_search():
+                filter_parameters['title__search'] = search_query
+            else:
+                filter_parameters['title__icontains'] = search_query
 
-        if getattr(django_settings, 'ASKBOT_MULTILINGUAL', False):
-            filter_parameters['language_code'] = get_language()
+            if getattr(django_settings, 'ASKBOT_MULTILINGUAL', False):
+                filter_parameters['language_code'] = get_language()
 
-        return self.filter(**filter_parameters)
+            return self.filter(**filter_parameters)
 
 
 class ThreadManager(BaseQuerySetManager):
@@ -145,10 +154,10 @@ class ThreadManager(BaseQuerySetManager):
             added_at = added_at,
             wiki = wiki,
             is_anonymous = is_anonymous,
-            #html field is denormalized in .save() call
             text = text,
-            #summary field is denormalized in .save() call
+            language_code=language
         )
+        #html and summary fields are denormalized in .save() call
         if question.wiki:
             #DATED COMMENT
             #todo: this is confusing - last_edited_at field
@@ -166,7 +175,7 @@ class ThreadManager(BaseQuerySetManager):
             author=author,
             is_anonymous=is_anonymous,
             text=text,
-            comment=const.POST_STATUS['default_version'],
+            comment=unicode(const.POST_STATUS['default_version']),
             revised_at=added_at,
             by_email=by_email,
             email_address=email_address
@@ -204,7 +213,7 @@ class ThreadManager(BaseQuerySetManager):
         todo: move to query set
         """
         if getattr(django_settings, 'ENABLE_HAYSTACK_SEARCH', False):
-            from askbot.search.haystack import AskbotSearchQuerySet
+            from askbot.search.haystack.searchquery import AskbotSearchQuerySet
             hs_qs = AskbotSearchQuerySet().filter(content=search_query)
             return hs_qs.get_django_queryset()
         else:
@@ -333,12 +342,24 @@ class ThreadManager(BaseQuerySetManager):
             else:
                 raise Exception('UNANSWERED_QUESTION_MEANING setting is wrong')
 
-        elif search_state.scope == 'favorite':
-            favorite_filter = models.Q(favorited_by=request_user)
+        elif search_state.scope == 'followed':
+            followed_filter = models.Q(favorited_by=request_user)
             if 'followit' in django_settings.INSTALLED_APPS:
                 followed_users = request_user.get_followed_users()
-                favorite_filter |= models.Q(posts__post_type__in=('question', 'answer'), posts__author__in=followed_users)
-            qs = qs.filter(favorite_filter)
+                followed_filter |= models.Q(posts__post_type__in=('question', 'answer'), posts__author__in=followed_users)
+
+            #a special case: "personalized" main page only ==
+            #if followed is the only available scope
+            #if total number (regardless of users selections)
+            #followed questions is < than a pagefull - we should mix in a list of
+            #random questions
+            if askbot_settings.ALL_SCOPE_ENABLED == askbot_settings.UNANSWERED_SCOPE_ENABLED == False:
+                followed_question_count = qs.filter(followed_filter).distinct().count()
+                if followed_question_count < 30:
+                    #here we mix in anything
+                    followed_filter |= models.Q(deleted=False)
+
+            qs = qs.filter(followed_filter)
 
         #user contributed questions & answers
         if search_state.author:
@@ -550,6 +571,7 @@ class Thread(models.Model):
                                             null=True,
                                             blank=True
                                         )
+    deleted = models.BooleanField(default=False, db_index=True)
 
     #denormalized data: the core approval of the posts is made
     #in the revisions. In the revisions there is more data about
@@ -586,6 +608,64 @@ class Thread(models.Model):
         self._question_cache = Post.objects.get(post_type='question', thread=self)
         return self._question_cache
 
+    def apply_hinted_tags(self, hints=None, user=None, timestamp=None, silent=False):
+        """match words in title and body with hints
+        and apply some of the hints as tags,
+        so that total number of tags in no more
+        than the maximum allowed number of tags"""
+
+        #1) see how many tags we're missing,
+        #if we don't need more we return
+        existing_tags = self.get_tag_names()
+        tags_count = len(existing_tags)
+        if tags_count >= askbot_settings.MAX_TAGS_PER_POST:
+            return
+
+        #2) get set of words from title and body
+        post_text = self.title + ' ' + self._question_post().text
+        post_text = post_text.lower()#normalize
+        post_words = set(post_text.split())
+
+        #3) get intersection set
+        #normalize hints and tags and remember the originals
+        orig_hints = dict()
+        for hint in hints:
+            orig_hints[hint.lower()] = hint
+
+        norm_hints = orig_hints.keys()
+        norm_tags = map(lambda v: v.lower(), existing_tags)
+
+        common_words = (set(norm_hints) & post_words) - set(norm_tags)
+
+        #4) for each common word count occurances in corpus
+        counts = dict()
+        for word in common_words:
+            counts[word] = sum(map(lambda w: w.lower() == word.lower(), post_words))
+
+        #5) sort words by count
+        sorted_words = sorted(
+                        common_words,
+                        lambda a, b: cmp(counts[b], counts[a])
+                    )
+
+        #6) extract correct number of most frequently used tags
+        need_tags = askbot_settings.MAX_TAGS_PER_POST - len(existing_tags)
+        add_tags = sorted_words[0:need_tags]
+        add_tags = map(lambda h: orig_hints[h], add_tags)
+
+        tagnames = ' '.join(existing_tags + add_tags)
+
+        if askbot_settings.FORCE_LOWERCASE_TAGS:
+            tagnames = tagnames.lower()
+
+        self.retag(
+            retagged_by=user,
+            retagged_at=timestamp or datetime.datetime.now(),
+            tagnames =' '.join(existing_tags + add_tags),
+            silent=silent
+        )
+
+
     def get_absolute_url(self):
         return self._question_post().get_absolute_url(thread = self)
         #question_id = self._question_post().id
@@ -599,6 +679,13 @@ class Thread(models.Model):
             return self.answer_count
         else:
             return self.get_answers(user).count()
+
+    def get_oldest_answer_id(self, user=None):
+        """give oldest visible answer id for the user"""
+        answers = self.get_answers(user=user).order_by('added_at')
+        if len(answers) > 0:
+            return answers[0].id
+        return None
 
     def get_sharing_info(self, visitor=None):
         """returns a dictionary with abbreviated thread sharing info:
@@ -828,17 +915,22 @@ class Thread(models.Model):
         changes in the post data - on votes, adding,
         deleting, editing content"""
         #we can call delete_many() here if using Django > 1.2
-        for sort_method in const.ANSWER_SORT_METHODS:
+        sort_methods = map(lambda v: v[0], const.ANSWER_SORT_METHODS)
+        for sort_method in sort_methods:
             cache.cache.delete(self.get_post_data_cache_key(sort_method))
 
-    def invalidate_cached_data(self):
+    def invalidate_cached_data(self, lazy=False):
         self.invalidate_cached_post_data()
-        #self.invalidate_cached_thread_content_fragment()
-        self.update_summary_html()
+        if lazy:
+            self.invalidate_cached_thread_content_fragment()
+        else:
+            self.update_summary_html()
 
-    def get_cached_post_data(self, user = None, sort_method = 'votes'):
+    def get_cached_post_data(self, user = None, sort_method = None):
         """returns cached post data, as calculated by
         the method get_post_data()"""
+        sort_method = sort_method or askbot_settings.DEFAULT_ANSWER_SORT_METHOD
+
         if askbot_settings.GROUPS_ENABLED:
             #temporary plug: bypass cache where groups are enabled
             return self.get_post_data(sort_method=sort_method, user=user)
@@ -849,7 +941,7 @@ class Thread(models.Model):
             cache.cache.set(key, post_data, const.LONG_TIME)
         return post_data
 
-    def get_post_data(self, sort_method='votes', user=None):
+    def get_post_data(self, sort_method=None, user=None):
         """returns question, answers as list and a list of post ids
         for the given thread, and the list of published post ids
         (four values)
@@ -857,6 +949,8 @@ class Thread(models.Model):
         all (both posts and the comments sorted in the correct
         order)
         """
+        sort_method = sort_method or askbot_settings.DEFAULT_ANSWER_SORT_METHOD
+
         thread_posts = self.posts.all()
         if askbot_settings.GROUPS_ENABLED:
             if user is None or user.is_anonymous():
@@ -867,13 +961,23 @@ class Thread(models.Model):
             thread_posts = thread_posts.filter(groups__in=groups)
             thread_posts = thread_posts.distinct()#important for >1 group
 
-        thread_posts = thread_posts.order_by(
-                    {
+        order_by_method = {
                         'latest':'-added_at',
                         'oldest':'added_at',
                         'votes':'-points'
-                    }[sort_method]
-                )
+                    }
+
+        default_answer_sort_method = askbot_settings.DEFAULT_ANSWER_SORT_METHOD
+        default_order_by_method = order_by_method[default_answer_sort_method]
+        order_by = order_by_method.get(sort_method, default_order_by_method)
+        #we add secondary sort method for the answers to make
+        #discussion more coherent
+        if order_by != default_order_by_method:
+            order_by = (order_by, default_order_by_method)
+        else:
+            order_by = (order_by,)
+
+        thread_posts = thread_posts.order_by(*order_by)
         #1) collect question, answer and comment posts and list of post id's
         answers = list()
         post_map = dict()
@@ -933,11 +1037,7 @@ class Thread(models.Model):
                                     ).filter(
                                         deleted=False
                                     ).order_by(
-                                        {
-                                            'latest':'-added_at',
-                                            'oldest':'added_at',
-                                            'votes':'-points'
-                                        }[sort_method]
+                                        *order_by
                                     ).values_list('id', flat=True)
 
             published_answer_ids = reversed(published_answer_ids)
@@ -1173,6 +1273,8 @@ class Thread(models.Model):
         Tag use counts are recalculated
         A signal tags updated is sent
 
+        TagSynonym is used to replace tag names
+
         *IMPORTANT*: self._question_post() has to
         exist when update_tags() is called!
         """
@@ -1182,9 +1284,20 @@ class Thread(models.Model):
         previous_tags = list(self.tags.filter(status = Tag.STATUS_ACCEPTED))
 
         ordered_updated_tagnames = [t for t in tagnames.strip().split(' ')]
+        updated_tagnames_tmp = set(ordered_updated_tagnames)
+
+        #apply TagSynonym
+        updated_tagnames = set()
+        for tag_name in updated_tagnames_tmp:
+            try:
+                tag_synonym = TagSynonym.objects.get(source_tag_name=tag_name)
+                updated_tagnames.add(tag_synonym.target_tag_name)
+                tag_synonym.auto_rename_count += 1
+                tag_synonym.save()
+            except TagSynonym.DoesNotExist:
+                updated_tagnames.add(tag_name)
 
         previous_tagnames = set([tag.name for tag in previous_tags])
-        updated_tagnames = set(ordered_updated_tagnames)
         removed_tagnames = previous_tagnames - updated_tagnames
 
         #remove tags from the question's tags many2many relation
@@ -1275,10 +1388,10 @@ class Thread(models.Model):
         tag_names.append(tag_name)
 
         self.retag(
-            retagged_by = user,
-            retagged_at = timestamp,
-            tagnames = ' '.join(tag_names),
-            silent = silent
+            retagged_by=user,
+            retagged_at=timestamp,
+            tagnames=' '.join(tag_names),
+            silent=silent
         )
 
     def retag(self, retagged_by=None, retagged_at=None, tagnames=None, silent=False):
@@ -1308,13 +1421,13 @@ class Thread(models.Model):
         # Create a new revision
         latest_revision = thread_question.get_latest_revision()
         PostRevision.objects.create(
-            post = thread_question,
-            title      = latest_revision.title,
-            author     = retagged_by,
-            revised_at = retagged_at,
-            tagnames   = tagnames,
-            summary    = const.POST_STATUS['retagged'],
-            text       = latest_revision.text
+            post=thread_question,
+            title=latest_revision.title,
+            author=retagged_by,
+            revised_at=retagged_at,
+            tagnames=tagnames,
+            summary=unicode(const.POST_STATUS['retagged']),
+            text=latest_revision.text
         )
 
     def has_favorite_by_user(self, user):
@@ -1387,6 +1500,8 @@ class Thread(models.Model):
             'search_state': DummySearchState(),
             'visitor': visitor
         }
+        from askbot.views.context import get_extra as get_extra_context
+        context.update(get_extra_context('ASKBOT_QUESTION_SUMMARY_EXTRA_CONTEXT', None, context))
         html = get_template('widgets/question_summary.html').render(context)
         # INFO: Timeout is set to 30 days:
         # * timeout=0/None is not a reliable cross-backend way to set infinite timeout
@@ -1420,8 +1535,12 @@ class FavoriteQuestion(models.Model):
     class Meta:
         app_label = 'askbot'
         db_table = u'favorite_question'
+
+    def __str__(self):
+        return unicode(self).encode('utf-8')
+
     def __unicode__(self):
-        return '[%s] favorited at %s' %(self.user, self.added_at)
+        return u'[%s] favorited at %s' %(self.user, self.added_at)
 
 
 class DraftQuestion(models.Model):

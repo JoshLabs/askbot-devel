@@ -115,7 +115,8 @@ def ask_widget(request, widget_id):
                 return redirect('ask_by_widget_complete')
             else:
                 #FIXME: this redirect is temporal need to create the correct view
-                next_url = '%s?next=%s' % (reverse('widget_signin'), reverse('ask_by_widget'))
+                next_url = '%s?next=%s' % (reverse('widget_signin'),
+                                           reverse('ask_by_widget', args=(widget_id,)))
                 return redirect(next_url)
 
         form = forms.AskWidgetForm(
@@ -157,6 +158,7 @@ def list_widgets(request, model):
     return render(request, 'embed/list_widgets.html', data)
 
 @decorators.admins_only
+@csrf.csrf_protect
 def create_widget(request, model):
     form_class = _get_form(model)
     model_class = _get_model(model)
@@ -175,6 +177,7 @@ def create_widget(request, model):
     return render(request, 'embed/widget_form.html', data)
 
 @decorators.admins_only
+@csrf.csrf_protect
 def edit_widget(request, model, widget_id):
     model_class = _get_model(model)
     form_class = _get_form(model)
@@ -214,6 +217,7 @@ def edit_widget(request, model, widget_id):
     return render(request, 'embed/widget_form.html', data)
 
 @decorators.admins_only
+@csrf.csrf_protect
 def delete_widget(request, model, widget_id):
     model_class = _get_model(model)
     widget = get_object_or_404(model_class, pk=widget_id)

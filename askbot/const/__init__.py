@@ -22,6 +22,15 @@ CLOSE_REASONS = (
 LONG_TIME = 60*60*24*30 #30 days is a lot of time
 DATETIME_FORMAT = '%I:%M %p, %d %b %Y'
 
+SHARE_NOTHING = 0
+SHARE_MY_POSTS = 1
+SHARE_EVERYTHING = 2
+SOCIAL_SHARING_MODE_CHOICES = (
+    (SHARE_NOTHING, _('disable sharing')),
+    (SHARE_MY_POSTS, _('my posts')),
+    (SHARE_EVERYTHING, _('all posts'))
+)
+
 TYPE_REPUTATION = (
     (1, 'gain_by_upvoted'),
     (2, 'gain_by_answer_accepted'),
@@ -101,9 +110,13 @@ REPLY_WITH_COMMENT_TEMPLATE = _(
 )
 REPLY_SEPARATOR_REGEX = re.compile(r'==== .* -=-==', re.MULTILINE|re.DOTALL)
 
-ANSWER_SORT_METHODS = (#no translations needed here
-    'latest', 'oldest', 'votes'
+ANSWER_SORT_METHODS = (
+    ('latest' , _('latest first')),
+    ('oldest', _('oldest first')),
+    ('votes', _('most voted first')),
 )
+DEFAULT_ANSWER_SORT_METHOD = 'votes'
+
 #todo: add assertion here that all sort methods are unique
 #because they are keys to the hash used in implementations
 #of Q.run_advanced_search
@@ -112,7 +125,7 @@ DEFAULT_POST_SORT_METHOD = 'activity-desc'
 POST_SCOPE_LIST = (
     ('all', _('all')),
     ('unanswered', _('unanswered')),
-    ('favorite', _('favorite')),
+    ('followed', _('followed')),
 )
 DEFAULT_POST_SCOPE = 'all'
 

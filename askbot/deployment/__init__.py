@@ -152,7 +152,7 @@ def deploy_askbot(options):
     create_new_project = False
     if os.path.exists(options['dir_name']):
         if path_utils.has_existing_django_project(options['dir_name']):
-            create_new_project = bool(options.force)
+            create_new_project = bool(options['force'])
         else:
             create_new_project = True
     else:
@@ -217,6 +217,8 @@ def collect_missing_options(options_dict):
                 print 'name %s cannot be used for the database name' % value
             elif value == path_utils.LOG_DIR_NAME:
                 print 'name %s cannot be used for the database name' % value
+            else:
+                database_file_name = value
 
             if database_file_name:
                 options_dict['database_name'] = database_file_name

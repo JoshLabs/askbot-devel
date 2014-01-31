@@ -20,6 +20,7 @@ python-openid
 pystache==0.3.1
 pytz
 sanction
-django-tinymce
+django-tinymce==1.5.1b2
 longerusername
 beautifulsoup4
+django-picklefield==0.3.0
