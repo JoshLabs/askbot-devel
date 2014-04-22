@@ -395,8 +395,8 @@ class Migration(SchemaMigration):
             'social_sharing_mode': ('django.db.models.fields.IntegerField', [], {'default': '0'}),
             'status': ('django.db.models.fields.CharField', [], {'default': "'w'", 'max_length': '2'}),
             'subscribed_tags': ('django.db.models.fields.TextField', [], {'blank': 'True'}),
-            'twitter_access_token': ('django.db.models.fields.CharField', [], {'default': "''", 'max_length': '256'}),
-            'twitter_handle': ('django.db.models.fields.CharField', [], {'default': "''", 'max_length': '32'}),
+            'twitter_access_token': ('django.db.models.fields.CharField', [], {'default': "''", 'max_length': '256', 'null': 'True'}),
+            'twitter_handle': ('django.db.models.fields.CharField', [], {'default': "''", 'max_length': '32', 'null': 'True'}),
             'user_permissions': ('django.db.models.fields.related.ManyToManyField', [], {'to': "orm['auth.Permission']", 'symmetrical': 'False', 'blank': 'True'}),
             'username': ('django.db.models.fields.CharField', [], {'unique': 'True', 'max_length': '255'}),
             'website': ('django.db.models.fields.URLField', [], {'max_length': '200', 'blank': 'True'})

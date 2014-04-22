@@ -13,12 +13,12 @@ class Migration(SchemaMigration):
         safe_add_column(
             'auth_user',
             'twitter_access_token',
-            self.gf('django.db.models.fields.CharField')(default='', max_length=256)
+            self.gf('django.db.models.fields.CharField')(default='', max_length=256, null=True)
         )
         safe_add_column(
             'auth_user',
             'twitter_handle',
-            self.gf('django.db.models.fields.CharField')(default='', max_length=32)
+            self.gf('django.db.models.fields.CharField')(default='', max_length=32, null=True)
         )
         safe_add_column(
             'auth_user',
@@ -27,9 +27,9 @@ class Migration(SchemaMigration):
         )
         
     def backwards(self, orm):
-        self.delete_column('auth_user', 'twitter_access_token')
-        self.delete_column('auth_user', 'twitter_handle')
-        self.delete_column('auth_user', 'social_sharing_mode')
+        db.delete_column('auth_user', 'twitter_access_token')
+        db.delete_column('auth_user', 'twitter_handle')
+        db.delete_column('auth_user', 'social_sharing_mode')
 
     models = {
         'askbot.activity': {
