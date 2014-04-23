@@ -1,5 +1,12 @@
 Changes in Askbot
 =================
+0.7.49.3 (Apr 23, 2014)
+---------------------
+* Modified Release
+* Fixed askbot migration causing bug in south for sqlite (Will be fixed with a later release of South)
+* Fixed logout bug in askbot (Will be fixed with the latest release of askbot)
+
+
 0.7.49.2 (Jan 31, 2014)
 ---------------------
 * Updated to 0.7.49
