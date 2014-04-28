@@ -5,7 +5,7 @@ Changes in Askbot
 * Modified Release
 * Fixed askbot migration causing bug in south for sqlite (Will be fixed with a later release of South)
 * Fixed logout bug in askbot (Will be fixed with the latest release of askbot)
-
+* Updated askbot views to comply with custom forums changes
 
 0.7.49.2 (Jan 31, 2014)
 ---------------------
