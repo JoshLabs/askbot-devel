@@ -150,7 +150,7 @@ def manage_inbox(request):
         return HttpResponse(data, mimetype="application/json")
 
 
-def process_vote(user = None, vote_direction = None, post = None):
+def process_vote(user=None, vote_direction=None, post=None):
     """function (non-view) that actually processes user votes
     - i.e. up- or down- votes
 
@@ -165,45 +165,48 @@ def process_vote(user = None, vote_direction = None, post = None):
             'Sorry, anonymous users cannot vote'
         ))
 
-    user.assert_can_vote_for_post(post = post, direction = vote_direction)
+    user.assert_can_vote_for_post(post=post, direction=vote_direction)
     vote = user.get_old_vote_for_post(post)
     response_data = {}
     if vote != None:
         user.assert_can_revoke_old_vote(vote)
-        score_delta = vote.cancel()
-        response_data['count'] = post.points+ score_delta
-        response_data['status'] = 1 #this means "cancel"
+        before_vote = vote.vote
+        if (before_vote < 0 and vote_direction == 'up') or (before_vote > 0 and vote_direction == 'down'):
+            score_delta = vote.cancel()
+            response_data['count'] = post.points + score_delta
+            response_data['status'] = 1 #this means "cancel"
 
     else:
         #this is a new vote
         votes_left = user.get_unused_votes_today()
         if votes_left <= 0:
             raise exceptions.PermissionDenied(
-                            _('Sorry you ran out of votes for today')
-                        )
+                _('Sorry you ran out of likes/dislikes for today')
+            )
 
         votes_left -= 1
         if votes_left <= \
             askbot_settings.VOTES_LEFT_WARNING_THRESHOLD:
-            msg = _('You have %(votes_left)s votes left for today') \
-                    % {'votes_left': votes_left }
+            msg = _('You have %(votes_left)s likes/dislikes left for today') \
+                  % {'votes_left': votes_left}
             response_data['message'] = msg
 
         if vote_direction == 'up':
-            vote = user.upvote(post = post)
+            vote = user.upvote(post=post)
         else:
-            vote = user.downvote(post = post)
+            vote = user.downvote(post=post)
 
         response_data['count'] = post.points
         response_data['status'] = 0 #this means "not cancel", normal operation
 
     response_data['success'] = 1
-
+    vote = user.get_old_vote_for_post(post)
     return response_data
 
 
+
 @csrf.csrf_exempt
-def vote(request):
+def vote(request, id):
     """
     todo: this subroutine needs serious refactoring it's too long and is hard to understand
 
@@ -251,9 +254,11 @@ def vote(request):
     response_data = {
         "allowed": 1,
         "success": 1,
-        "status" : 0,
-        "count"  : 0,
-        "message" : ''
+        "status": 0,
+        "count": 0,
+        "message": '',
+        "likes": 0,
+        "dislikes": 0,
     }
 
     try:
@@ -262,14 +267,12 @@ def vote(request):
         else:
             raise Exception(_('Sorry, something is not right here...'))
 
-        id = request.POST.get('postId')
-
         if vote_type == '0':
             if askbot_settings.ACCEPTING_ANSWERS_ENABLED is False:
                 return
             if request.user.is_authenticated():
                 answer_id = request.POST.get('postId')
-                answer = get_object_or_404(models.Post, post_type='answer', id = answer_id)
+                answer = get_object_or_404(models.Post, post_type='answer', id=answer_id)
                 # make sure question author is current user
                 if answer.accepted():
                     request.user.unaccept_best_answer(answer)
@@ -292,7 +295,7 @@ def vote(request):
             # all this can be avoided with
             # better query parameters
             vote_direction = 'up'
-            if vote_type in ('2','6'):
+            if vote_type in ('2', '6'):
                 vote_direction = 'down'
 
             if vote_type in ('5', '6'):
@@ -306,10 +309,10 @@ def vote(request):
             ######################
 
             response_data = process_vote(
-                                        user = request.user,
-                                        vote_direction = vote_direction,
-                                        post = post
-                                    )
+                user=request.user,
+                vote_direction=vote_direction,
+                post=post
+            )
 
             ####################################################################
             if vote_type in ('1', '2'): # up/down-vote question
@@ -337,7 +340,7 @@ def vote(request):
                 id = request.POST.get('postId')
                 post = get_object_or_404(models.Post, post_type='answer', id=id)
 
-            request.user.flag_post(post, cancel = True)
+            request.user.flag_post(post, cancel=True)
 
             response_data['count'] = post.offensive_flag_count
             response_data['success'] = 1
@@ -350,7 +353,7 @@ def vote(request):
                 id = request.POST.get('postId')
                 post = get_object_or_404(models.Post, id=id)
 
-            request.user.flag_post(post, cancel_all = True)
+            request.user.flag_post(post, cancel_all=True)
 
             response_data['count'] = post.offensive_flag_count
             response_data['success'] = 1
@@ -363,9 +366,9 @@ def vote(request):
                 post = get_object_or_404(models.Post, post_type='answer', id=id)
 
             if post.deleted == True:
-                request.user.restore_post(post = post)
+                request.user.restore_post(post=post)
             else:
-                request.user.delete_post(post = post)
+                request.user.delete_post(post=post)
 
         elif request.is_ajax() and request.method == 'POST':
 
@@ -379,7 +382,7 @@ def vote(request):
             #accept answer
             if vote_type == '4':
                 fave = request.user.toggle_favorite_question(question)
-                response_data['count'] = models.FavoriteQuestion.objects.filter(thread = question.thread).count()
+                response_data['count'] = models.FavoriteQuestion.objects.filter(thread=question.thread).count()
                 if fave == False:
                     response_data['status'] = 1
 
@@ -421,9 +424,11 @@ def vote(request):
             #favorite or subscribe/unsubscribe
             #upvote or downvote question or answer - those
             #are handled within user.upvote and user.downvote
-            post = models.Post.objects.get(id = id)
+            post = models.Post.objects.get(id=id)
             post.thread.invalidate_cached_data()
 
+        response_data['likes'] = post.vote_up_count
+        response_data['dislikes'] = post.vote_down_count
         data = simplejson.dumps(response_data)
 
     except Exception, e:
@@ -431,6 +436,7 @@ def vote(request):
         response_data['success'] = 0
         data = simplejson.dumps(response_data)
     return HttpResponse(data, mimetype="application/json")
+
 
 #internally grouped views - used by the tagging system
 @csrf.csrf_exempt
@@ -544,17 +550,14 @@ def get_tag_list(request):
     """returns tags to use in the autocomplete
     function
     """
-    tags = models.Tag.objects.filter(
-                        deleted = False,
-                        status = models.Tag.STATUS_ACCEPTED
-                    )
+    tag_names = models.Tag.objects.filter(
+        deleted=False
+    ).values_list(
+        'name', flat=True
+    )
+    output = simplejson.dumps(list(tag_names))
+    return HttpResponse(output, mimetype='text/json')
 
-    tag_names = tags.values_list(
-                        'name', flat = True
-                    )
-
-    output = '\n'.join(map(escape, tag_names))
-    return HttpResponse(output, mimetype = 'text/plain')
 
 @decorators.get_only
 def load_object_description(request):

@@ -241,8 +241,8 @@ def ask(request):#view used to ask a new question
 
             if request.user.is_authenticated():
                 drafts = models.DraftQuestion.objects.filter(
-                                                author=request.user
-                                            )
+                    author=request.user
+                )
                 drafts.delete()
 
                 user = form.get_post_user(request.user)
@@ -265,21 +265,21 @@ def ask(request):#view used to ask a new question
                     )
                     return HttpResponseRedirect(question.get_absolute_url())
                 except exceptions.PermissionDenied, e:
-                    request.user.message_set.create(message = unicode(e))
+                    request.user.message_set.create(message=unicode(e))
                     return HttpResponseRedirect(reverse('index'))
 
             else:
                 request.session.flush()
                 session_key = request.session.session_key
                 models.AnonymousQuestion.objects.create(
-                    session_key = session_key,
-                    title       = title,
-                    tagnames = tagnames,
-                    wiki = wiki,
-                    is_anonymous = ask_anonymously,
-                    text = text,
-                    added_at = timestamp,
-                    ip_addr = request.META['REMOTE_ADDR'],
+                    session_key=session_key,
+                    title=title,
+                    tagnames=tagnames,
+                    wiki=wiki,
+                    is_anonymous=ask_anonymously,
+                    text=text,
+                    added_at=timestamp,
+                    ip_addr=request.META['REMOTE_ADDR'],
                 )
                 return HttpResponseRedirect(url_utils.get_login_url())
 
@@ -316,14 +316,15 @@ def ask(request):#view used to ask a new question
     data = {
         'active_tab': 'ask',
         'page_class': 'ask-page',
-        'form' : form,
+        'form': form,
         'mandatory_tags': models.tag.get_mandatory_tags(),
-        'email_validation_faq_url':reverse('faq') + '#validate',
+        # 'email_validation_faq_url':reverse('faq') + '#validate',
         'category_tree_data': askbot_settings.CATEGORY_TREE,
         'tag_names': list()#need to keep context in sync with edit_question for tag editor
     }
     data.update(context.get_for_tag_editor())
     return render(request, 'ask.html', data)
+
 
 @login_required
 @csrf.csrf_exempt

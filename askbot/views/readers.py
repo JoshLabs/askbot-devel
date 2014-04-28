@@ -12,7 +12,8 @@ import urllib
 import operator
 from django.shortcuts import get_object_or_404
 from django.shortcuts import render
-from django.http import HttpResponseRedirect, HttpResponse, Http404, HttpResponseNotAllowed
+from django.http import HttpResponseRedirect, HttpResponse, Http404, \
+    HttpResponseNotAllowed, HttpResponsePermanentRedirect
 from django.core.paginator import Paginator, EmptyPage, InvalidPage
 from django.template.loader import get_template
 from django.template import RequestContext
@@ -58,6 +59,8 @@ INDEX_TAGS_SIZE = 25
 DEFAULT_PAGE_SIZE = 60
 # used in questions
 # used in answers
+DEFAULT_TAGS_LIMIT = 100
+# used in question
 
 #refactor? - we have these
 #views that generate a listing of questions in one way or another:
@@ -65,10 +68,12 @@ DEFAULT_PAGE_SIZE = 60
 #should we dry them up?
 #related topics - information drill-down, search refinement
 
+
 def index(request):#generates front page - shows listing of questions sorted in various ways
     """index view mapped to the root url of the Q&A site
     """
     return HttpResponseRedirect(reverse('questions'))
+
 
 def questions(request, **kwargs):
     """
@@ -355,16 +360,16 @@ def question(request, id):#refactor - long subroutine. display question body, an
     #and and if it is not found again - then give up
     try:
         question_post = models.Post.objects.filter(
-                                post_type = 'question',
-                                id = id
-                            ).select_related('thread')[0]
+            post_type='question',
+            id=id
+        ).select_related('thread')[0]
     except IndexError:
     # Handle URL mapping - from old Q/A/C/ URLs to the new one
         try:
             question_post = models.Post.objects.filter(
-                                    post_type='question',
-                                    old_question_id = id
-                                ).select_related('thread')[0]
+                post_type='question',
+                old_question_id=id
+            ).select_related('thread')[0]
         except IndexError:
             raise Http404
 
@@ -385,17 +390,17 @@ def question(request, id):#refactor - long subroutine. display question body, an
     try:
         question_post.assert_is_visible_to(request.user)
     except exceptions.QuestionHidden, error:
-        request.user.message_set.create(message = unicode(error))
+        request.user.message_set.create(message=unicode(error))
         return HttpResponseRedirect(reverse('index'))
 
     #redirect if slug in the url is wrong
     if request.path.split('/')[-2] != question_post.slug:
         logging.debug('no slug match!')
         question_url = '?'.join((
-                            question_post.get_absolute_url(),
-                            urllib.urlencode(request.GET)
-                        ))
-        return HttpResponseRedirect(question_url)
+            question_post.get_absolute_url(),
+            urllib.urlencode(request.GET)
+        ))
+        return HttpResponsePermanentRedirect(question_url)
 
 
     #resolve comment and answer permalinks
@@ -421,7 +426,7 @@ def question(request, id):#refactor - long subroutine. display question body, an
                 'Sorry, the comment you are looking for has been '
                 'deleted and is no longer accessible'
             )
-            request.user.message_set.create(message = error_message)
+            request.user.message_set.create(message=error_message)
             return HttpResponseRedirect(question_post.thread.get_absolute_url())
 
         if str(show_comment.thread._question_post().id) != str(id):
@@ -431,11 +436,11 @@ def question(request, id):#refactor - long subroutine. display question body, an
         try:
             show_comment.assert_is_visible_to(request.user)
         except exceptions.AnswerHidden, error:
-            request.user.message_set.create(message = unicode(error))
+            request.user.message_set.create(message=unicode(error))
             #use reverse function here because question is not yet loaded
-            return HttpResponseRedirect(reverse('question', kwargs = {'id': id}))
+            return HttpResponseRedirect(reverse('question', kwargs={'id': id}))
         except exceptions.QuestionHidden, error:
-            request.user.message_set.create(message = unicode(error))
+            request.user.message_set.create(message=unicode(error))
             return HttpResponseRedirect(reverse('index'))
 
     elif show_answer:
@@ -450,8 +455,8 @@ def question(request, id):#refactor - long subroutine. display question body, an
         try:
             show_post.assert_is_visible_to(request.user)
         except django_exceptions.PermissionDenied, error:
-            request.user.message_set.create(message = unicode(error))
-            return HttpResponseRedirect(reverse('question', kwargs = {'id': id}))
+            request.user.message_set.create(message=unicode(error))
+            return HttpResponseRedirect(reverse('question', kwargs={'id': id}))
 
     thread = question_post.thread
 
@@ -464,9 +469,9 @@ def question(request, id):#refactor - long subroutine. display question body, an
     #load answers and post id's->athor_id mapping
     #posts are pre-stuffed with the correctly ordered comments
     updated_question_post, answers, post_to_author, published_answer_ids = thread.get_cached_post_data(
-                                sort_method=answer_sort_method,
-                                user=request.user
-                            )
+        sort_method=answer_sort_method,
+        user=request.user
+    )
     question_post.set_cached_comments(
         updated_question_post.get_cached_comments()
     )
@@ -479,9 +484,9 @@ def question(request, id):#refactor - long subroutine. display question body, an
     #todo: cache this query set, but again takes only 3ms!
     if request.user.is_authenticated():
         user_votes = Vote.objects.filter(
-                            user=request.user,
-                            voted_post__id__in = post_to_author.keys()
-                        ).values_list('voted_post_id', 'vote')
+            user=request.user,
+            voted_post__id__in=post_to_author.keys()
+        ).values_list('voted_post_id', 'vote')
         user_votes = dict(user_votes)
         #we can avoid making this query by iterating through
         #already loaded posts
@@ -522,22 +527,22 @@ def question(request, id):#refactor - long subroutine. display question body, an
                 update_view_count = True
 
         request.session['question_view_times'][question_post.id] = \
-                                                    datetime.datetime.now()
+            datetime.datetime.now()
 
         #2) run the slower jobs in a celery task
         from askbot import tasks
         tasks.record_question_visit.delay(
-            question_post = question_post,
-            user_id = request.user.id,
-            update_view_count = update_view_count
+            question_post=question_post,
+            user_id=request.user.id,
+            update_view_count=update_view_count
         )
 
     paginator_data = {
-        'is_paginated' : (objects_list.count > const.ANSWERS_PAGE_SIZE),
+        'is_paginated': (objects_list.count > const.ANSWERS_PAGE_SIZE),
         'pages': objects_list.num_pages,
         'current_page_number': show_page,
         'page_object': page_objects,
-        'base_url' : request.path + '?sort=%s&amp;' % answer_sort_method,
+        'base_url': request.path + '?sort=%s&amp;' % answer_sort_method,
     }
     paginator_context = functions.setup_paginator(paginator_data)
 
@@ -556,9 +561,9 @@ def question(request, id):#refactor - long subroutine. display question body, an
     if request.user.is_authenticated():
         #todo: refactor into methor on thread
         drafts = models.DraftAnswer.objects.filter(
-                                        author=request.user,
-                                        thread=thread
-                                    )
+            author=request.user,
+            thread=thread
+        )
         if drafts.count() > 0:
             initial['text'] = drafts[0].text
 
@@ -584,41 +589,46 @@ def question(request, id):#refactor - long subroutine. display question body, an
                     previous_answer = answer
                     break
 
+    # TODO: to have a mechanism to fetch tags randomly instead name-wise
+    tags = models.Tag.objects.all().filter(deleted=False).exclude(used_count=0).order_by('name')[:DEFAULT_TAGS_LIMIT]
+
     if request.user.is_authenticated() and askbot_settings.GROUPS_ENABLED:
         group_read_only = request.user.is_read_only()
     else:
         group_read_only = False
 
     data = {
-        'is_cacheable': False,#is_cacheable, #temporary, until invalidation fix
-        'long_time': const.LONG_TIME,#"forever" caching
+        'is_cacheable': False,  #is_cacheable, #temporary, until invalidation fix
+        'long_time': const.LONG_TIME,  #"forever" caching
         'page_class': 'question-page',
         'active_tab': 'questions',
-        'question' : question_post,
+        'question': question_post,
         'thread': thread,
         'thread_is_moderated': thread.is_moderated(),
         'user_is_thread_moderator': thread.has_moderator(request.user),
         'published_answer_ids': published_answer_ids,
-        'answer' : answer_form,
+        'answer': answer_form,
         'editor_is_unfolded': answer_form.has_data(),
-        'answers' : page_objects.object_list,
+        'answers': page_objects.object_list,
         'answer_count': thread.get_answer_count(request.user),
         'category_tree_data': askbot_settings.CATEGORY_TREE,
         'user_votes': user_votes,
         'user_post_id_list': user_post_id_list,
-        'user_can_post_comment': user_can_post_comment,#in general
+        'user_can_post_comment': user_can_post_comment,  #in general
         'new_answer_allowed': new_answer_allowed,
         'oldest_answer_id': thread.get_oldest_answer_id(request.user),
         'previous_answer': previous_answer,
-        'tab_id' : answer_sort_method,
-        'favorited' : favorited,
-        'similar_threads' : thread.get_similar_threads(),
+        'tab_id': answer_sort_method,
+        'favorited': favorited,
+        'similar_threads': thread.get_similar_threads(),
         'language_code': translation.get_language(),
-        'paginator_context' : paginator_context,
+        'paginator_context': paginator_context,
         'show_post': show_post,
         'show_comment': show_comment,
         'show_comment_position': show_comment_position,
         'group_read_only': group_read_only,
+	'tags': tags,
+        'font_size': extra_tags.get_tag_font_size(tags),
     }
     #shared with ...
     if askbot_settings.GROUPS_ENABLED:
@@ -630,6 +640,7 @@ def question(request, id):#refactor - long subroutine. display question body, an
     data.update(extra)
 
     return render(request, 'question.html', data)
+
 
 def revisions(request, id, post_type = None):
     assert post_type in ('question', 'answer')
